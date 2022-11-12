@@ -59,6 +59,7 @@ public class Cliente {
                 case "TRY_OTHER_SERVICE_OR_LATER":
                     System.out.println("Erro retornado. Tente novamente mais tarde.");
                 break;
+
             }
         }
 
@@ -132,19 +133,16 @@ public class Cliente {
                     case("PUT_OK"):
                         trataPutOK(mensagem);
                     break;
-
-                    default:
-                        return;
                 }
 
             }catch(IOException e){
                 e.printStackTrace();
+            }finally{
                 try{
                     socket.close();
                 }catch(IOException e2){
                     e2.printStackTrace();
                 }
-                return;
             }
         }
 
@@ -223,6 +221,7 @@ public class Cliente {
                         System.out.println("Insira o valor para o PUT: ");
                         String valuePut = inputUserScanner.next();
                         enviaPut(keyPut, valuePut);
+                    break;
                 }
             }
 
