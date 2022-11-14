@@ -43,9 +43,10 @@ public class Cliente {
         }
 
         public void processaRespostaGet(Mensagem mensagemRecebida){
+            String[] keyValueArray = parseKeyValueString(mensagemRecebida.data);
             switch(mensagemRecebida.messageType){
                 case "RESPONSE":
-                    String[] keyValueArray = parseKeyValueString(mensagemRecebida.data);
+                    timestamps.put(keyValueArray[0], Math.max(mensagemRecebida.timestamp, timestamps.getOrDefault(keyValueArray[0], 0)));
                     System.out.println(String.format(
                         "GET key: %s value: %s obtido do servidor %s, meu timestamp %s e do servidor %s",
                         keyValueArray[0],
@@ -57,8 +58,22 @@ public class Cliente {
                 break;
     
                 case "TRY_OTHER_SERVICE_OR_LATER":
-                    System.out.println("Erro retornado. Tente novamente mais tarde.");
+                    System.out.println(String.format(
+                        "Erro de consistência encontrado. Tente novamente mais tarde. Meu timestamp %s e timestamp do servidor (%s) %s",
+                        timestamps.getOrDefault(keyValueArray[0], 0),
+                        mensagemRecebida.sender,
+                        mensagemRecebida.timestamp
+                    ));
                 break;
+
+                case "NOT_FOUND":
+                    System.out.println(String.format(
+                        "Erro retornado. A key informada não foi encontrada. Meu timestamp %s e timestamp do servidor (%s) %s",
+                        timestamps.getOrDefault(keyValueArray[0], 0),
+                        mensagemRecebida.sender,
+                        mensagemRecebida.timestamp
+                    ));
+            break;
 
             }
         }
@@ -67,25 +82,26 @@ public class Cliente {
 
             Socket socketClient = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
             
-            OutputStream os = socketClient.getOutputStream();
-            DataOutputStream writer = new DataOutputStream(os);
-    
-            writer.writeBytes(mensagem.toJson());
-    
-            if(mensagem.messageType == "GET"){
-                InputStreamReader is = new InputStreamReader(socketClient.getInputStream());
-                BufferedReader reader = new BufferedReader(is);
-    
-                String messageJson = reader.readLine();
+            try{
+                OutputStream os = socketClient.getOutputStream();
+                DataOutputStream writer = new DataOutputStream(os);
+        
+                writer.writeBytes(mensagem.toJson() + "\n");
+        
+                if(mensagem.messageType.equals("GET")){
+                    InputStreamReader is = new InputStreamReader(socketClient.getInputStream());
+                    BufferedReader reader = new BufferedReader(is);
+        
+                    String messageJson = reader.readLine();
+        
+                    Mensagem mensagemRecebida = new Mensagem(messageJson);
+                    processaRespostaGet(mensagemRecebida);
+                    return;
+                }    
+            }finally{
                 socketClient.close();
-    
-                Mensagem mensagemRecebida = new Mensagem(messageJson);
-                processaRespostaGet(mensagemRecebida);
-                return;
             }
-    
-            socketClient.close();
-    
+
     
         }
 
@@ -110,7 +126,7 @@ public class Cliente {
 
         private void trataPutOK(Mensagem mensagem){
             String[] keyValueArray = parseKeyValueString(mensagem.data);
-            timestamps.put(keyValueArray[0], mensagem.timestamp);
+            timestamps.put(keyValueArray[0], Math.max(mensagem.timestamp, timestamps.get(keyValueArray[0])));
             System.out.println(String.format(
                 "PUT_OK key: %s value: %s timestamp: %s realizada no servidor %s",
                 keyValueArray[0],
@@ -139,7 +155,7 @@ public class Cliente {
                 e.printStackTrace();
             }finally{
                 try{
-                    socket.close();
+                    socketNo.close();
                 }catch(IOException e2){
                     e2.printStackTrace();
                 }
@@ -162,7 +178,9 @@ public class Cliente {
             String origemFormatada = String.format("%s:%s", getIpAddress(address.getAddress()), port);
             String randomServer = servidorList.get(new Random().nextInt(servidorList.size()));
             String keyValueFormatado = String.format("%s:%s", key, value);
-            Mensagem mensagemEnviar = new Mensagem("PUT", origemFormatada, randomServer, null, keyValueFormatado);
+            Integer timestampEnvio = timestamps.getOrDefault(key, 0) + 1;
+            timestamps.put(key, timestampEnvio);
+            Mensagem mensagemEnviar = new Mensagem("PUT", origemFormatada, randomServer, timestampEnvio, keyValueFormatado);
     
             Thread envioPut = new ThreadEnvio(mensagemEnviar);
             envioPut.start();

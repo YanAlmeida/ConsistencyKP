@@ -47,32 +47,44 @@ public class Servidor {
             mensagemEnviar = mensagem;
         }
 
-        private void processaReplicationOk(Mensagem mensagem){
+        private void processaReplicationOk(Mensagem mensagem) throws UnknownHostException, IOException{
+            replicationOkCounter.compute(mensagem.requestUUID, (k, v) -> v + 1);
 
+            if(replicationOkCounter.get(mensagem.requestUUID) >= servidores.size()){
+                String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress()) + ":" + port;
+                String[] uuidParseado = parseReplicationUUID(mensagem.requestUUID);
+                String[] keyValueArray = parseKeyValueString(mensagem.data);
+                Integer timestampEnviar = timestamps.get(keyValueArray[0]);
+                System.out.println(String.format("Enviando PUT_OK ao Cliente %s da key:%s ts:%s", uuidParseado[1], keyValueArray[0], timestampEnviar));
+                Mensagem putOk = new Mensagem("PUT_OK", ipPortaFormatado, uuidParseado[1], timestampEnviar, mensagem.data);
+                enviaMensagem(putOk);
+            }
         }
 
         public void enviaMensagem(Mensagem mensagem) throws UnknownHostException, IOException{
 
             Socket socketClient = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
             
-            OutputStream os = socketClient.getOutputStream();
-            DataOutputStream writer = new DataOutputStream(os);
-    
-            writer.writeBytes(mensagem.toJson());
-    
-            if(mensagem.messageType == "REPLICATION"){
-                InputStreamReader is = new InputStreamReader(socketClient.getInputStream());
-                BufferedReader reader = new BufferedReader(is);
-    
-                String messageJson = reader.readLine();
+            try{
+                OutputStream os = socketClient.getOutputStream();
+                DataOutputStream writer = new DataOutputStream(os);
+        
+                writer.writeBytes(mensagem.toJson() + "\n");
+        
+                if(mensagem.messageType.equals("REPLICATION")){
+                    InputStreamReader is = new InputStreamReader(socketClient.getInputStream());
+                    BufferedReader reader = new BufferedReader(is);
+        
+                    String messageJson = reader.readLine();
+        
+                    Mensagem mensagemRecebida = new Mensagem(messageJson);
+                    processaReplicationOk(mensagemRecebida);
+                    return;
+                }
+            }finally{
                 socketClient.close();
-    
-                Mensagem mensagemRecebida = new Mensagem(messageJson);
-                processaReplicationOk(mensagemRecebida);
-                return;
             }
 
-            socketClient.close();
     
         }
 
@@ -93,27 +105,59 @@ public class Servidor {
             socketNo = no;
         }
 
-        private void trataGet(Mensagem mensagem){
-            // AVALIAR O QUE FAZER CASO CHAVE NAO EXISTA
+        private void trataGet(Mensagem mensagem) throws IOException{
+            String key = mensagem.data;
+            String value = hashTable.get(key);
+            Integer timestamp = timestamps.getOrDefault(key, 0);
+            Integer clientTimestamp = mensagem.timestamp;
 
+            String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress()) + ":" + port;
+            String clienteIpPortaFormatado = getIpAddress(socketNo.getInetAddress().getAddress()) + ":" + socketNo.getPort();
+
+            OutputStream os = socketNo.getOutputStream();
+            DataOutputStream writer = new DataOutputStream(os);
+
+            Mensagem mensagemResposta = new Mensagem(
+                null,
+                ipPortaFormatado,
+                clienteIpPortaFormatado,
+                timestamp,
+                null
+            );
+
+            String devolvendo;
+
+            if(timestamp < clientTimestamp){
+                mensagemResposta.messageType = "TRY_OTHER_SERVICE_OR_LATER";
+                devolvendo = "erro";
+            }else if(value == null){
+                mensagemResposta.messageType = "NOT_FOUND";
+                devolvendo = "mensagem NOT_FOUND (valor é null)";
+            }else{
+                mensagemResposta.messageType = "RESPONSE";
+                mensagemResposta.data = String.format("%s:%s", key, value);
+                devolvendo = value;
+            }
+
+            System.out.println(String.format("Cliente %s GET key: %s ts: %s. Meu ts é %s, portanto devolvendo %s", clienteIpPortaFormatado, key, clientTimestamp, timestamp, devolvendo));
+            writer.writeBytes(mensagemResposta.toJson() + "\n");
         }
 
         private void trataPut(Mensagem mensagem) throws UnknownHostException, IOException{
+            String[] keyValueArray = parseKeyValueString(mensagem.data);
             if(souLider){
-                String[] keyValueArray = parseKeyValueString(mensagem.data);
                 hashTable.put(keyValueArray[0], keyValueArray[1]);
 
-                if(!timestamps.containsKey(keyValueArray[0])){
-                    timestamps.put(keyValueArray[0], 1);
-                }else{
-                    Integer oldTimestamp = timestamps.get(keyValueArray[0]);
-                    timestamps.put(keyValueArray[0], oldTimestamp+1);
-                }
+                String clienteIpPortaFormatado = getIpAddress(socketNo.getInetAddress().getAddress()) + ":" + socketNo.getPort();
 
-                String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress());
+                System.out.println(String.format("Cliente %s PUT key:%s value:%s", clienteIpPortaFormatado, keyValueArray[0], keyValueArray[1]));
+
+                timestamps.put(keyValueArray[0], Math.max(mensagem.timestamp, timestamps.getOrDefault(keyValueArray[0], 0)));
+
+                String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress()) + ":" + port;
                 String keyValueFormatado = String.format("%s:%s", keyValueArray[0], keyValueArray[1]);
                 Integer timestamp = timestamps.get(keyValueArray[0]);
-                String requestUUID = UUID.randomUUID().toString() + ":" + mensagem.sender;
+                String requestUUID = UUID.randomUUID().toString() + "$" + mensagem.sender;
                 replicationOkCounter.put(requestUUID, 0);
                 servidores.forEach(servidor -> {
                     Mensagem replicationMessage = new Mensagem("REPLICATION", ipPortaFormatado, servidor, timestamp, keyValueFormatado, requestUUID);
@@ -122,6 +166,7 @@ public class Servidor {
                 });
 
             }else{
+                System.out.println(String.format("Encaminhando PUT key:%s value:%s", keyValueArray[0], keyValueArray[1]));
                 mensagem.receiver = ipPortaLider;
                 ThreadEnvio threadEnvio = new ThreadEnvio(mensagem);
                 threadEnvio.start();
@@ -130,18 +175,18 @@ public class Servidor {
 
         private void trataReplication(Mensagem mensagem) throws IOException{
             String[] keyValueArray = parseKeyValueString(mensagem.data);
+            System.out.println(String.format("REPLICATION key:%s value:%s ts:%s", keyValueArray[0], keyValueArray[1], mensagem.timestamp));
             hashTable.put(keyValueArray[0], keyValueArray[1]);
             timestamps.put(keyValueArray[0], mensagem.timestamp);
 
-            String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress());
+            String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress()) + ":" + port;
             
             OutputStream os = socketNo.getOutputStream();
             DataOutputStream writer = new DataOutputStream(os);
             
-            
-            Mensagem mensagemReplicationOk = new Mensagem("REPLICATION_OK", ipPortaFormatado, ipPortaLider, null, null, mensagem.requestUUID);
+            Mensagem mensagemReplicationOk = new Mensagem("REPLICATION_OK", ipPortaFormatado, ipPortaLider, null, mensagem.data, mensagem.requestUUID);
 
-            writer.writeBytes(mensagemReplicationOk.toJson());
+            writer.writeBytes(mensagemReplicationOk.toJson() + "\n");
         }
 
 
@@ -172,7 +217,7 @@ public class Servidor {
                 e.printStackTrace();
             }finally{
                 try{
-                    socket.close();
+                    socketNo.close();
                 }catch(IOException e2){
                     e2.printStackTrace();
                 }
@@ -188,7 +233,7 @@ public class Servidor {
             port = porta;
             ipPortaLider = lider;
             servidores = servers;
-            if(ipPortaLider == getIpAddress(address.getAddress())){
+            if(ipPortaLider.equals(getIpAddress(address.getAddress()) + ":" + port)){
                 souLider = true;
             }else{
                 souLider = false;
@@ -238,6 +283,19 @@ public class Servidor {
             }
 
         }
+    }
+
+    private static String[] parseReplicationUUID(String replicationUUID){
+        Pattern replicationUUIDPattern = Pattern.compile("(.+)\\$(.+)");
+        Matcher replicationUUIDMatcher = replicationUUIDPattern.matcher(replicationUUID);
+
+        replicationUUIDMatcher.find();
+
+        String[] retorno = new String[2];
+        retorno[0] = replicationUUIDMatcher.group(1);
+        retorno[1] = replicationUUIDMatcher.group(2);
+
+        return retorno;
     }
 
     private static String[] parseKeyValueString(String keyValueString){

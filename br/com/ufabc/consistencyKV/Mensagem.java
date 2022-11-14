@@ -60,19 +60,33 @@ public class Mensagem {
         dataMatcher.find();
         uuidMatcher.find();
 
-        messageType = typeMatcher.group(1);
-        sender = senderMatcher.group(1);
-        receiver = receiverMatcher.group(1);
-        timestamp = Integer.parseInt(timestampMatcher.group(1));
-        data = dataMatcher.group(1);
-        requestUUID = uuidMatcher.group(1);
+        messageType = checkNull(typeMatcher.group(1));
+        sender = checkNull(senderMatcher.group(1));
+        receiver = checkNull(receiverMatcher.group(1));
+        timestamp = processInteger(timestampMatcher.group(1));
+        data = checkNull(dataMatcher.group(1));
+        requestUUID = checkNull(uuidMatcher.group(1));
+    }
+
+    public Integer processInteger(String valor){
+        if(valor.equals("null")){
+            return null;
+        }
+        return Integer.parseInt(valor);
+    }
+
+    public String checkNull(String valor){
+        if(valor.equals("null")){
+            return null;
+        }
+        return valor;
     }
 
     public String toJson() {
         /* Método para transformar a mensagem em string JSON */
         
         return String.format(
-            "{\"messageType\": \"%s\", \"sender\": \"%s\", \"receiver\": \"%s\", \"timestamp\": \"%s\", \"data\": \"%s\", \"uuidMatcher\": \"%s\"}",
+            "{\"messageType\": \"%s\", \"sender\": \"%s\", \"receiver\": \"%s\", \"timestamp\": \"%s\", \"data\": \"%s\", \"requestUUID\": \"%s\"}",
             messageType,
             sender,
             receiver,
