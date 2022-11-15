@@ -51,8 +51,7 @@ public class Servidor {
         /* 
          * Classe aninhada que representa a Thread que efetua o envio de 
          * mensagens aos clientes (PUT_OK) ou a outros servidores (REPLICATION)
-         */
-        
+         */  
         private Mensagem mensagemEnviar;
 
         public ThreadEnvio(Mensagem mensagem){
@@ -85,7 +84,6 @@ public class Servidor {
              * Caso seja uma mensagem do tipo REPLICATION, aguarda a mensagem de resposta (REPLICATION_OK) 
              * para processamento
              */
-
             Socket socketC = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
             
             try{
@@ -167,7 +165,7 @@ public class Servidor {
             if(timestamp < clientTimestamp){
                 mensagemResposta.messageType = "TRY_OTHER_SERVICE_OR_LATER";
                 devolvendo = "erro";
-            }else if(value == null){
+            }else if(value == null && timestamp.equals(0)){
                 mensagemResposta.messageType = "NOT_FOUND";
                 devolvendo = "mensagem NOT_FOUND (valor é null)";
             }else{
@@ -187,7 +185,6 @@ public class Servidor {
              * para cada servidor através da thread de envio, que processará o retorno dos 
              * REPLICATION_OK e tratará do envio do PUT_OK
              */
-
             // try{
             //     TimeUnit.SECONDS.sleep(5); // Para testes relacionados ao erro TRY_OTHER_SERVICE_OR_LATER
             // }catch(InterruptedException e){
