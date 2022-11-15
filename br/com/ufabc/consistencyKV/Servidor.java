@@ -8,12 +8,14 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Scanner;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+// import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 
@@ -32,22 +34,37 @@ public class Servidor {
     private volatile Boolean initialized = false;
 
     public Servidor(Scanner scanner){
+        /* 
+         * Construtor recebendo scanner para uso em diversos métodos/threads.
+         */
         inputUserScanner = scanner;
     }
 
     public ServerSocket getServerSocket() {
+        /* 
+         * Método getter para retorno do ServerSocket
+         */
         return socket;
     }
 
     private class ThreadEnvio extends Thread {
+        /* 
+         * Classe aninhada que representa a Thread que efetua o envio de 
+         * mensagens aos clientes (PUT_OK) ou a outros servidores (REPLICATION)
+         */
         
         private Mensagem mensagemEnviar;
 
         public ThreadEnvio(Mensagem mensagem){
+            /* Construtor que recebe a mensagem a ser enviada */
             mensagemEnviar = mensagem;
         }
 
         private void processaReplicationOk(Mensagem mensagem) throws UnknownHostException, IOException{
+            /* 
+             * Método que processa mensagens REPLICATION_OK (enviadas em resposta ao REPLICATION)
+             * e, caso todos os servidores tenham enviado, efetua o envio da mensagem PUT_OK para os clientes 
+             */
             replicationOkCounter.compute(mensagem.requestUUID, (k, v) -> v + 1);
 
             if(replicationOkCounter.get(mensagem.requestUUID) >= servidores.size()){
@@ -62,17 +79,23 @@ public class Servidor {
         }
 
         public void enviaMensagem(Mensagem mensagem) throws UnknownHostException, IOException{
+            /* 
+             * Método para o envio de mensagens a outros servidores ou clientes, 
+             * utilizando a classe Mensagem e seus atributos para efetuar a conexão com eles via TCP.
+             * Caso seja uma mensagem do tipo REPLICATION, aguarda a mensagem de resposta (REPLICATION_OK) 
+             * para processamento
+             */
 
-            Socket socketClient = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
+            Socket socketC = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
             
             try{
-                OutputStream os = socketClient.getOutputStream();
+                OutputStream os = socketC.getOutputStream();
                 DataOutputStream writer = new DataOutputStream(os);
         
                 writer.writeBytes(mensagem.toJson() + "\n");
         
                 if(mensagem.messageType.equals("REPLICATION")){
-                    InputStreamReader is = new InputStreamReader(socketClient.getInputStream());
+                    InputStreamReader is = new InputStreamReader(socketC.getInputStream());
                     BufferedReader reader = new BufferedReader(is);
         
                     String messageJson = reader.readLine();
@@ -82,13 +105,17 @@ public class Servidor {
                     return;
                 }
             }finally{
-                socketClient.close();
+                socketC.close();
             }
 
     
         }
 
         public void run() {
+            /* 
+             * Execução da ThreadEnvio, executa o método enviaMensagem, 
+             * passando a mensagem recebida no construtor 
+             */
             try {
                 enviaMensagem(mensagemEnviar);
             } catch (IOException e) {
@@ -98,14 +125,24 @@ public class Servidor {
     }
 
     private class ThreadAtendimento extends Thread {
-
+        /* Classe aninhada que representa a thread de atendimento a
+           conexões recebidas dos clientes/outros servidores */
         private Socket socketNo;
 
         public ThreadAtendimento(Socket no) {
+            /* 
+             * Construtor que recebe o socket gerado após o accept() para comunicação 
+             * com o servidor ou cliente conectado
+             */
             socketNo = no;
         }
 
         private void trataGet(Mensagem mensagem) throws IOException{
+            /* 
+             * Método para tratamento de mensagem do tipo GET recebida. Efetua a busca da key na hashTable, 
+             * avalia os timestamps e, de acordo com o caso, retorna a chave e o valor, o erro TRY_OTHER_SERVICE_OR_LATER
+             * ou o erro NOT_FOUND.
+             */
             String key = mensagem.data;
             String value = hashTable.get(key);
             Integer timestamp = timestamps.getOrDefault(key, 0);
@@ -122,7 +159,7 @@ public class Servidor {
                 ipPortaFormatado,
                 clienteIpPortaFormatado,
                 timestamp,
-                null
+                String.format("%s:%s", key, value)
             );
 
             String devolvendo;
@@ -135,7 +172,6 @@ public class Servidor {
                 devolvendo = "mensagem NOT_FOUND (valor é null)";
             }else{
                 mensagemResposta.messageType = "RESPONSE";
-                mensagemResposta.data = String.format("%s:%s", key, value);
                 devolvendo = value;
             }
 
@@ -144,6 +180,20 @@ public class Servidor {
         }
 
         private void trataPut(Mensagem mensagem) throws UnknownHostException, IOException{
+            /*
+             * Método para o tratamento de mensagem do tipo PUT recebida. Caso não seja o líder, 
+             * encaminha a mensagem para o líder. Caso seja o líder, efetua o PUT na hashTable, 
+             * atualiza o timestamp e envia uma mensagem REPLICATION
+             * para cada servidor através da thread de envio, que processará o retorno dos 
+             * REPLICATION_OK e tratará do envio do PUT_OK
+             */
+
+            // try{
+            //     TimeUnit.SECONDS.sleep(5); // Para testes relacionados ao erro TRY_OTHER_SERVICE_OR_LATER
+            // }catch(InterruptedException e){
+            //     e.printStackTrace();
+            // }
+            
             String[] keyValueArray = parseKeyValueString(mensagem.data);
             if(souLider){
                 hashTable.put(keyValueArray[0], keyValueArray[1]);
@@ -152,7 +202,8 @@ public class Servidor {
 
                 System.out.println(String.format("Cliente %s PUT key:%s value:%s", clienteIpPortaFormatado, keyValueArray[0], keyValueArray[1]));
 
-                timestamps.put(keyValueArray[0], Math.max(mensagem.timestamp, timestamps.getOrDefault(keyValueArray[0], 0)));
+                Integer possibleTimestamp = timestamps.getOrDefault(keyValueArray[0], 0) + 1;
+                timestamps.put(keyValueArray[0], Math.max(mensagem.timestamp, possibleTimestamp));
 
                 String ipPortaFormatado = getIpAddress(socket.getInetAddress().getAddress()) + ":" + port;
                 String keyValueFormatado = String.format("%s:%s", keyValueArray[0], keyValueArray[1]);
@@ -174,6 +225,11 @@ public class Servidor {
         }
 
         private void trataReplication(Mensagem mensagem) throws IOException{
+            /*
+             * Método para o tratamento de mensagem do tipo REPLICATION recebida. Efetua a atualização da
+             * entrada na hashtable e do timestamp dessa entrada, e após isso retorna uma mensagem do tipo 
+             * REPLICATION_OK para o líder
+             */
             String[] keyValueArray = parseKeyValueString(mensagem.data);
             System.out.println(String.format("REPLICATION key:%s value:%s ts:%s", keyValueArray[0], keyValueArray[1], mensagem.timestamp));
             hashTable.put(keyValueArray[0], keyValueArray[1]);
@@ -191,6 +247,10 @@ public class Servidor {
 
 
         public void run() {
+            /* 
+             * Execução da ThreadAtendimento, efetua a leitura da mensagem enviada pelo cliente/outro servidor
+             * e direciona ela para o tratamento correto de acordo com seu tipo
+             */
             try{
                 InputStreamReader is = new InputStreamReader(socketNo.getInputStream());
                 BufferedReader reader = new BufferedReader(is);
@@ -227,8 +287,21 @@ public class Servidor {
     }
 
     private class ThreadMenu extends Thread {
+        /* 
+         * Classe aninhada que representa a thread que executa o menu interativo e possui os métodos
+         * correspondentes a suas opções
+         */
 
         public void inicializaServidor(String lider, String ipAddress, Integer porta, List<String> servers) throws IOException{
+            /* 
+             * Método correspondente à opção "INITIALIZE" do menu. Responsável por colher dados como:
+             * O endereço/porta do servidor, endereço/porta do líder e endereço/porta dos outros servidores,
+             * além de criar o ServerSocket, responsável por ouvir a porta especificada.
+             */
+            if(initialized){
+                initialized = false;
+                socket.close();
+            }
             address = InetAddress.getByName(ipAddress);
             port = porta;
             ipPortaLider = lider;
@@ -286,6 +359,10 @@ public class Servidor {
     }
 
     private static String[] parseReplicationUUID(String replicationUUID){
+        /*
+         * Método estático para separar o requestUUID de mensagens do tipo replication,
+         * que contém, além do UUID, o endereço e porta do cliente
+         */
         Pattern replicationUUIDPattern = Pattern.compile("(.+)\\$(.+)");
         Matcher replicationUUIDMatcher = replicationUUIDPattern.matcher(replicationUUID);
 
@@ -299,6 +376,9 @@ public class Servidor {
     }
 
     private static String[] parseKeyValueString(String keyValueString){
+        /*
+         * Método estático para separar a chave e o valor do campo data das mensagens
+         */
         Pattern keyValuePattern = Pattern.compile("(.+):(.+)");
         Matcher keyValueMatcher = keyValuePattern.matcher(keyValueString);
 
@@ -345,6 +425,11 @@ public class Servidor {
     }
 
     public static void main(String[] args) throws IOException{
+        /* 
+         * Método main, responsável por instânciar a classe Servidor, startar a ThreadMenu e
+         * ouvir novas requisições através de um loop e do ServerSocket.accept(), 
+         * que culminam no start da ThreadAtendimento
+         */
         Scanner scanner = new Scanner(System.in);
         Servidor servidor = new Servidor(scanner);
 
@@ -353,9 +438,14 @@ public class Servidor {
 
         while(true){
             if(servidor.initialized){
-                Socket socketRecebimento = servidor.getServerSocket().accept();
-                ThreadAtendimento thread = servidor.new ThreadAtendimento(socketRecebimento);
-                thread.start();
+                try{
+                    Socket socketRecebimento = servidor.getServerSocket().accept();
+                    ThreadAtendimento thread = servidor.new ThreadAtendimento(socketRecebimento);
+                    thread.start();
+                }catch(SocketException e){
+                    e.printStackTrace();
+                }
+
             }
             
         }

@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,25 +29,41 @@ public class Cliente {
     private volatile Boolean initialized = false;
 
     public Cliente(Scanner scanner){
+        /* 
+         * Construtor recebendo scanner para uso em diversos métodos/threads.
+         */
         inputUserScanner = scanner;
     }
 
     public ServerSocket getServerSocket() {
+        /* 
+         * Método getter para retorno do ServerSocket
+         */
         return socket;
     }
 
     private class ThreadEnvio extends Thread {
+        /* 
+         * Classe aninhada que representa a Thread que efetua o envio de 
+         * mensagens aos servidores (GET ou PUT), e viabiliza o processamento do retorno do GET (mensagens RESPONSE)
+         */  
         Mensagem mensagemEnvio;
 
         public ThreadEnvio(Mensagem enviar){
+            /* Construtor que recebe a mensagem a ser enviada */
             mensagemEnvio = enviar;
         }
 
         public void processaRespostaGet(Mensagem mensagemRecebida){
+            /* 
+             * Método que processa mensagens RESPONSE e erros (enviadas em resposta ao GET),
+             * atualizando o timestamp no caso do RESPONSE e exibindo os valores ou exibindo mensagens de erro
+             * personalizadas para os erros TRY_OTHER_SERVICE_OR_LATER e NOT_FOUND
+             */
             String[] keyValueArray = parseKeyValueString(mensagemRecebida.data);
             switch(mensagemRecebida.messageType){
                 case "RESPONSE":
-                    timestamps.put(keyValueArray[0], Math.max(mensagemRecebida.timestamp, timestamps.getOrDefault(keyValueArray[0], 0)));
+                    timestamps.put(keyValueArray[0], mensagemRecebida.timestamp);
                     System.out.println(String.format(
                         "GET key: %s value: %s obtido do servidor %s, meu timestamp %s e do servidor %s",
                         keyValueArray[0],
@@ -73,23 +90,28 @@ public class Cliente {
                         mensagemRecebida.sender,
                         mensagemRecebida.timestamp
                     ));
-            break;
+                break;
 
             }
         }
 
         public void enviaMensagem(Mensagem mensagem) throws UnknownHostException, IOException{
-
-            Socket socketClient = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
+            /* 
+             * Método para o envio de mensagens a outros servidores ou clientes, 
+             * utilizando a classe Mensagem e seus atributos para efetuar a conexão com eles via TCP.
+             * Caso seja uma mensagem do tipo GET, aguarda a mensagem de resposta (RESPONSE ou erros) 
+             * para processamento
+             */
+            Socket socketC = new Socket(getIpv4FromIpPort(mensagem.receiver), getPortFromIpPort(mensagem.receiver));
             
             try{
-                OutputStream os = socketClient.getOutputStream();
+                OutputStream os = socketC.getOutputStream();
                 DataOutputStream writer = new DataOutputStream(os);
         
                 writer.writeBytes(mensagem.toJson() + "\n");
         
                 if(mensagem.messageType.equals("GET")){
-                    InputStreamReader is = new InputStreamReader(socketClient.getInputStream());
+                    InputStreamReader is = new InputStreamReader(socketC.getInputStream());
                     BufferedReader reader = new BufferedReader(is);
         
                     String messageJson = reader.readLine();
@@ -99,13 +121,17 @@ public class Cliente {
                     return;
                 }    
             }finally{
-                socketClient.close();
+                socketC.close();
             }
 
     
         }
 
         public void run() {
+            /* 
+             * Execução da ThreadEnvio, executa o método enviaMensagem, 
+             * passando a mensagem recebida no construtor 
+             */
             try{
                 enviaMensagem(mensagemEnvio);
             }catch(IOException e){
@@ -117,16 +143,25 @@ public class Cliente {
     }
 
     private class ThreadResposta extends Thread {
-
+        /* Classe aninhada que representa a thread de atendimento a
+           conexões recebidas do servidor líder (desconhecido) */
         private Socket socketNo;
 
         public ThreadResposta(Socket no) {
+            /* 
+             * Construtor que recebe o socket gerado após o accept() para comunicação 
+             * com o servidor líder (desconhecido)
+             */
             socketNo = no;
         }
 
         private void trataPutOK(Mensagem mensagem){
+            /*
+             * Método para tratamento da mensagem do tipo PUT_OK, exibindo print na tela e atualizando o timestamp
+             * da entrada correspondente
+             */
             String[] keyValueArray = parseKeyValueString(mensagem.data);
-            timestamps.put(keyValueArray[0], Math.max(mensagem.timestamp, timestamps.get(keyValueArray[0])));
+            timestamps.put(keyValueArray[0], mensagem.timestamp);
             System.out.println(String.format(
                 "PUT_OK key: %s value: %s timestamp: %s realizada no servidor %s",
                 keyValueArray[0],
@@ -138,6 +173,10 @@ public class Cliente {
         }
 
         public void run() {
+            /* 
+             * Execução da ThreadResposta, efetua a leitura da mensagem enviada pelo servidor líder (desconhecido)
+             * e direciona ela para o tratamento (PUT_OK)
+             */
             try{
                 InputStreamReader is = new InputStreamReader(socketNo.getInputStream());
                 BufferedReader reader = new BufferedReader(is);
@@ -165,8 +204,20 @@ public class Cliente {
     }
 
     private class ThreadMenu extends Thread {
-
+        /* 
+         * Classe aninhada que representa a thread que executa o menu interativo e possui os métodos
+         * correspondentes a suas opções
+         */
         public void inicializaCliente(List<String> servidores) throws IOException{
+            /* 
+             * Método correspondente à opção "INITIALIZE" do menu. Responsável por colher
+             * o endereço/porta dos servidores, além de criar o ServerSocket,
+             * responsável por ouvir em alguma porta disponível do cliente.
+             */
+            if(initialized){
+                initialized = false;
+                socket.close();
+            }
             socket = new ServerSocket(0);
             address = socket.getInetAddress();
             port = socket.getLocalPort();
@@ -175,6 +226,10 @@ public class Cliente {
         }
 
         public void enviaPut(String key, String value){
+            /* 
+             * Método correspondente à opção "PUT" do menu, permite que o cliente gere uma mensagem do tipo
+             * PUT, contendo uma chave e um valor, e envie para um servidor aleatório através da ThreadEnvio
+             */
             String origemFormatada = String.format("%s:%s", getIpAddress(address.getAddress()), port);
             String randomServer = servidorList.get(new Random().nextInt(servidorList.size()));
             String keyValueFormatado = String.format("%s:%s", key, value);
@@ -187,6 +242,10 @@ public class Cliente {
         }
     
         public void enviaGet(String key){
+            /* 
+             * Método correspondente à opção "GET" do menu, permite que o cliente gere uma mensagem do tipo
+             * GET, contendo uma chave, e envie para um servidor aleatório através da ThreadEnvio
+             */
             String origemFormatada = String.format("%s:%s", getIpAddress(address.getAddress()), port);
             String randomServer = servidorList.get(new Random().nextInt(servidorList.size()));
     
@@ -228,12 +287,20 @@ public class Cliente {
                     break;
 
                     case "2":
+                        if(!initialized){
+                            System.out.println("Inicialize o cliente primeiro.");
+                            continue;
+                        }
                         System.out.println("Insira a chave para o GET: ");
                         String keyGet = inputUserScanner.next();
                         enviaGet(keyGet);
                     break;
 
                     case "3":
+                        if(!initialized){
+                            System.out.println("Inicialize o cliente primeiro.");
+                            continue;
+                        }
                         System.out.println("Insira a chave para o PUT: ");
                         String keyPut = inputUserScanner.next();
                         System.out.println("Insira o valor para o PUT: ");
@@ -247,6 +314,9 @@ public class Cliente {
     }
 
     private static String[] parseKeyValueString(String keyValueString){
+        /*
+         * Método estático para separar a chave e o valor do campo data das mensagens
+         */
         Pattern keyValuePattern = Pattern.compile("(.+):(.+)");
         Matcher keyValueMatcher = keyValuePattern.matcher(keyValueString);
 
@@ -293,6 +363,11 @@ public class Cliente {
     }
 
     public static void main(String[] args) throws IOException{
+        /* 
+         * Método main, responsável por instânciar a classe Cliente, startar a ThreadMenu e
+         * ouvir requisições (por ex., o PUT_OK do líder, que é desconhecido)
+         * através de um loop e do ServerSocket.accept(), que culminam no start da ThreadResposta
+         */
         Scanner scanner = new Scanner(System.in);
         Cliente cliente = new Cliente(scanner);
 
@@ -301,9 +376,14 @@ public class Cliente {
 
         while(true){
             if(cliente.initialized){
-                Socket socketRecebimento = cliente.getServerSocket().accept();
-                ThreadResposta thread = cliente.new ThreadResposta(socketRecebimento);
-                thread.start();
+                try{
+                    Socket socketRecebimento = cliente.getServerSocket().accept();
+                    ThreadResposta thread = cliente.new ThreadResposta(socketRecebimento);
+                    thread.start();
+                }catch(SocketException e){
+                    e.printStackTrace();
+                }
+
             }
             
         }
